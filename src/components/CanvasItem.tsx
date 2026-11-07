@@ -1,16 +1,17 @@
 import { memo, useLayoutEffect, useRef } from 'react'
 import type { Item, NoteItem } from '../lib/types'
 import { CroppedImage, NOTE_FONT, NoteBody } from './ItemViews'
+import { prefersReducedMotion } from './ui'
 
 export type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se' | 'e' | 'w'
 
 type Props = {
   item: Item
   selected: boolean
-  solo: boolean // the only selected item → show handles
+  solo: boolean // the only selected item → resizable
   editing: boolean
   hidden: boolean
-  linked: boolean // note attached to the selected image
+  appear: boolean // added after the board loaded → animate in
   magnet: boolean // image a note will snap onto
   pulse: boolean // note that just attached
   onPointerDown: (e: React.PointerEvent, item: Item) => void
@@ -34,12 +35,20 @@ function CanvasItem(p: Props) {
     return () => ro.disconnect()
   }, [item.type, item.id, p.onMeasure])
 
+  // New items settle in. WAAPI keeps this independent of the CSS attach-snap animation.
+  useLayoutEffect(() => {
+    if (!p.appear || !ref.current || prefersReducedMotion()) return
+    ref.current.animate([{ opacity: 0, scale: 0.94 }, { opacity: 1, scale: 1 }], { duration: 280, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Invisible grab zones on the corners (images) or sides (notes); the cursor shows they're there.
   const handles: ResizeHandle[] = item.type === 'image' ? ['nw', 'ne', 'sw', 'se'] : ['w', 'e']
 
   return (
     <div
       ref={ref}
-      className={`item item-${item.type}${p.selected ? ' selected' : ''}${p.editing ? ' editing' : ''}${p.linked ? ' linked' : ''}${p.magnet ? ' magnet' : ''}${p.pulse ? ' pulse' : ''}`}
+      className={`item item-${item.type}${p.selected ? ' selected' : ''}${p.editing ? ' editing' : ''}${p.magnet ? ' magnet' : ''}${p.pulse ? ' pulse' : ''}`}
       style={{
         left: item.x,
         top: item.y,
@@ -56,7 +65,7 @@ function CanvasItem(p: Props) {
     >
       {item.type === 'image' ? (
         <>
-          <CroppedImage item={item} />
+          <CroppedImage item={item} fade />
           {item.tags.length > 0 && (
             <div className="item-tags">
               {item.tags.map((t) => (
@@ -72,7 +81,7 @@ function CanvasItem(p: Props) {
       ) : (
         <NoteBody item={item} />
       )}
-      {p.selected && <div className="sel-outline" />}
+      <div className="sel-outline" />
       {p.solo && !p.editing && handles.map((h) => <div key={h} className={`handle h-${h}`} onPointerDown={(e) => p.onResizeStart(e, item, h)} />)}
     </div>
   )

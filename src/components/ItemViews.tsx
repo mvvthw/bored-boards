@@ -1,9 +1,12 @@
+import { useState } from 'react'
 import type { Crop, ImageItem, Item, NoteItem } from '../lib/types'
 import { useAssetUrl } from '../lib/hooks'
 import { itemsBounds } from '../lib/db'
 
-export function CroppedImage({ item, crop = item.crop, w = item.w, h = item.h }: { item: ImageItem; crop?: Crop; w?: number; h?: number }) {
+/** `fade`: fade the picture in once it has loaded (canvas items; copies of an on-screen image shouldn't flash). */
+export function CroppedImage({ item, crop = item.crop, w = item.w, h = item.h, fade = false }: { item: ImageItem; crop?: Crop; w?: number; h?: number; fade?: boolean }) {
   const url = useAssetUrl(item.assetId, item.src)
+  const [loaded, setLoaded] = useState<string | null>(null)
   const iw = w / crop.w
   const ih = h / crop.h
   return (
@@ -14,6 +17,8 @@ export function CroppedImage({ item, crop = item.crop, w = item.w, h = item.h }:
           alt=""
           draggable={false}
           decoding="async"
+          className={fade ? `fade${loaded === url ? ' loaded' : ''}` : undefined}
+          onLoad={fade ? () => setLoaded(url) : undefined}
           style={{ left: -crop.x * iw, top: -crop.y * ih, width: iw, height: ih }}
         />
       )}

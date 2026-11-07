@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronLeft, ImagePlus, Keyboard, Maximize, Minus, Pencil, Plus, Type, UploadCloud } from 'lucide-react'
+import { Check, ChevronLeft, Hand, ImagePlus, Keyboard, Maximize, Minus, Pencil, Plus, Type, UploadCloud } from 'lucide-react'
 import type { BoardMeta, Crop, ImageItem, Item, NoteItem, Viewport } from '../lib/types'
 import { FULL_CROP } from '../lib/types'
 import { getBoardData, getBoardMeta, itemsBounds, saveBoardData, saveBoardMeta, uid } from '../lib/db'
@@ -11,7 +11,8 @@ import CanvasItem, { type ResizeHandle } from '../components/CanvasItem'
 import CropOverlay, { applyCrop, fullFrame } from '../components/CropOverlay'
 import { CropBar, SelectionBar } from '../components/ContextBar'
 import { InlineName } from './Dashboard'
-import { toast, useSize } from '../components/ui'
+import { CroppedImage, NoteBody } from '../components/ItemViews'
+import { EXIT_MS, Presence, toast, useLeaving, useSize } from '../components/ui'
 
 const MIN_ZOOM = 0.08
 const MAX_ZOOM = 5
@@ -39,6 +40,10 @@ export default function Board({ id }: { id: string }) {
   const [dropping, setDropping] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [showKeys, setShowKeys] = useState(false)
+  // 'hand': a plain left-drag pans, anywhere. Middle-drag and Space-drag pan in either tool.
+  const [tool, setTool] = useState<'select' | 'hand'>('select')
+  const toolRef = useRef(tool)
+  toolRef.current = tool
   const [canvasRef, size] = useSize<HTMLDivElement>()
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -108,6 +113,29 @@ export default function Board({ id }: { id: string }) {
     }
   }, [id, setItems, setVp])
 
+  // Items that mount after the first load animate in; the initial board just appears.
+  const live = useRef(false)
+  useEffect(() => {
+    if (ready) live.current = true
+  }, [ready])
+
+  // Removed items linger briefly as non-interactive ghosts so they can fade out.
+  const [ghosts, setGhosts] = useState<Item[]>([])
+  const prevItems = useRef(items)
+  useLayoutEffect(() => {
+    const prev = prevItems.current
+    prevItems.current = items
+    if (prev === items || !live.current) return
+    const ids = new Set(items.map((i) => i.id))
+    const gone = prev.filter((i) => !ids.has(i.id) && !(i.type === 'note' && !i.text.trim()))
+    setGhosts((g) => {
+      // An item that came back (undo) drops its ghost.
+      const kept = g.some((x) => ids.has(x.id)) ? g.filter((x) => !ids.has(x.id)) : g
+      return gone.length ? [...kept, ...gone] : kept
+    })
+    if (gone.length) window.setTimeout(() => setGhosts((g) => g.filter((x) => !gone.includes(x))), EXIT_MS + 40)
+  }, [items])
+
   const pendingFit = useRef(false)
   useLayoutEffect(() => {
     if (!ready || !pendingFit.current || size.width === 0) return
@@ -158,20 +186,24 @@ export default function Board({ id }: { id: string }) {
     const r = rect()
     return toWorld(r.left + r.width / 2, r.top + r.height / 2)
   }
-  const zoomAt = (cx: number, cy: number, z: number) => {
-    const r = rect()
-    const v = vpRef.current
+  /** `v` zoomed to `z`, keeping the screen point (sx, sy) (canvas-relative) fixed. */
+  const zoomedVp = (v: Viewport, sx: number, sy: number, z: number): Viewport => {
     const nz = clamp(z, MIN_ZOOM, MAX_ZOOM)
-    const sx = cx - r.left
-    const sy = cy - r.top
     const wx = (sx - v.x) / v.zoom
     const wy = (sy - v.y) / v.zoom
-    setVp({ zoom: nz, x: sx - wx * nz, y: sy - wy * nz })
+    return { zoom: nz, x: sx - wx * nz, y: sy - wy * nz }
   }
-  const zoomBy = (f: number) => {
+  const zoomAt = (cx: number, cy: number, z: number) => {
     const r = rect()
-    zoomAt(r.left + r.width / 2, r.top + r.height / 2, vpRef.current.zoom * f)
+    setVp(zoomedVp(vpRef.current, cx - r.left, cy - r.top, z))
   }
+  // Buttons & shortcuts glide around the view center. Repeated presses stack onto the running animation's target.
+  const zoomCenterTo = (z: (from: number) => number) => {
+    const r = rect()
+    const from = animTo.current ?? vpRef.current
+    animateVp(zoomedVp(from, r.width / 2, r.height / 2, z(from.zoom)))
+  }
+  const zoomBy = (f: number) => zoomCenterTo((z) => z * f)
   function fitTo(list: Item[], animate = true) {
     const el = canvasRef.current
     if (!el) return
@@ -188,15 +220,18 @@ export default function Board({ id }: { id: string }) {
     else setVp(next)
   }
   const animRef = useRef(0)
+  const animTo = useRef<Viewport | null>(null)
   const stopAnim = () => {
     if (!animRef.current) return
     cancelAnimationFrame(animRef.current)
     animRef.current = 0
+    animTo.current = null
     if (!wheelTimer.current) lockCursor(undefined)
   }
   const animateVp = (to: Viewport) => {
     stopAnim()
     const from = vpRef.current
+    animTo.current = to
     const t0 = performance.now()
     const step = (t: number) => {
       const k = Math.min(1, (t - t0) / 320)
@@ -205,6 +240,7 @@ export default function Board({ id }: { id: string }) {
       if (k < 1) animRef.current = requestAnimationFrame(step)
       else {
         animRef.current = 0
+        animTo.current = null
         if (!wheelTimer.current) lockCursor(undefined)
       }
     }
@@ -403,8 +439,10 @@ export default function Board({ id }: { id: string }) {
     if (e.button === 2) return
     if (cropping) finishCrop()
     if (editingId) (document.activeElement as HTMLElement)?.blur()
-    const pan = e.button === 1 || spaceHeld.current || !e.shiftKey
+    const onEmpty = e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('world')
+    const pan = e.button === 1 || spaceHeld.current || toolRef.current === 'hand'
     if (pan) {
+      if (e.button === 1) e.preventDefault()
       const v0 = vpRef.current
       stopAnim()
       drag(
@@ -415,16 +453,17 @@ export default function Board({ id }: { id: string }) {
         },
         (moved) => {
           setPanning(false)
-          if (!moved) setSelected([])
+          if (!moved && e.button === 0 && onEmpty) setSelected([])
         },
         3,
         'grabbing',
       )
       return
     }
-    // Shift-drag on empty canvas: marquee select.
+    if (e.button !== 0) return
+    // Drag on empty canvas: box select. Shift adds to the current selection.
     const r = rect()
-    const base = selRef.current
+    const base = e.shiftKey ? selRef.current : []
     const sx = e.clientX - r.left
     const sy = e.clientY - r.top
     drag(
@@ -440,15 +479,18 @@ export default function Board({ id }: { id: string }) {
         const hit = itemsRef.current.filter((i) => i.x < wx2 && i.x + i.w > wx1 && i.y < wy2 && i.y + i.h > wy1).map((i) => i.id)
         setSelected([...new Set([...base, ...hit])])
       },
-      () => setMarquee(null),
+      (moved) => {
+        setMarquee(null)
+        if (!moved && !e.shiftKey) setSelected([])
+      },
       3,
-      'crosshair',
     )
   }
 
   const onItemPointerDown = useCallback(
     (e: React.PointerEvent, item: Item) => {
-      if (e.button !== 0 || spaceHeld.current) return
+      // Middle button, Space and the hand tool fall through to the canvas, which pans.
+      if (e.button !== 0 || spaceHeld.current || toolRef.current === 'hand') return
       e.stopPropagation()
       if (item.id === editingIdRef.current) return
       if (croppingRef.current) {
@@ -512,6 +554,7 @@ export default function Board({ id }: { id: string }) {
 
   const onResizeStart = useCallback(
     (e: React.PointerEvent, item: Item, h: ResizeHandle) => {
+      if (e.button !== 0 || spaceHeld.current || toolRef.current === 'hand') return
       e.stopPropagation()
       const before = itemsRef.current
       const z = vpRef.current.zoom
@@ -677,8 +720,11 @@ export default function Board({ id }: { id: string }) {
         zoomBy(0.8)
       } else if (mod && k === '0') {
         e.preventDefault()
-        const r = rect()
-        zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1)
+        zoomCenterTo(() => 1)
+      } else if (k === 'h' && !mod) {
+        setTool((t) => (t === 'hand' ? 'select' : 'hand'))
+      } else if (k === 'v' && !mod) {
+        setTool('select')
       } else if (e.shiftKey && k === '1') {
         fitTo(itemsRef.current)
       } else if (e.shiftKey && k === '2' && selRef.current.length) {
@@ -746,7 +792,7 @@ export default function Board({ id }: { id: string }) {
     }
   })
 
-  // Reflect held modifiers in the cursor: space = hand (pan anywhere), shift = crosshair (box select), alt = copy.
+  // Reflect held modifiers in the cursor: space = hand (pan anywhere), alt = copy.
   useEffect(() => {
     const el = canvasRef.current
     if (!el) return
@@ -754,12 +800,11 @@ export default function Board({ id }: { id: string }) {
       const typing = isTyping(e.target)
       const space = e.key === ' ' ? e.type === 'keydown' : spaceHeld.current
       el.classList.toggle('mod-space', space && !typing)
-      el.classList.toggle('mod-shift', e.shiftKey && !typing)
       el.classList.toggle('mod-alt', e.altKey && !typing)
     }
     const clear = () => {
       spaceHeld.current = false
-      el.classList.remove('mod-space', 'mod-shift', 'mod-alt')
+      el.classList.remove('mod-space', 'mod-alt')
     }
     window.addEventListener('keydown', sync)
     window.addEventListener('keyup', sync)
@@ -799,13 +844,18 @@ export default function Board({ id }: { id: string }) {
   })()
 
   const empty = ready && items.length === 0
+  // Keyed by what it's for, so switching selection cross-fades the bar instead of jumping it.
+  const barId =
+    !barPos || gesturing || editingId || panning || marquee ? null : cropping ? `crop:${cropping.id}` : selItems.length ? `sel:${selected.join(',')}` : null
 
   return (
     <div className="board-page">
       <div
         ref={canvasRef}
-        className={`canvas${panning ? ' panning' : ''}${dropping ? ' dropping' : ''}${tidying ? ' tidying' : ''}`}
+        className={`canvas${tool === 'hand' ? ' hand' : ''}${panning ? ' panning' : ''}${dropping ? ' dropping' : ''}${tidying ? ' tidying' : ''}`}
         onPointerDown={onCanvasPointerDown}
+        // Middle-click would otherwise start the browser's autoscroll.
+        onMouseDown={(e) => e.button === 1 && e.preventDefault()}
         onDoubleClick={(e) => {
           if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('world')) {
             const p = toWorld(e.clientX, e.clientY)
@@ -838,7 +888,7 @@ export default function Board({ id }: { id: string }) {
               solo={selected.length === 1 && selected[0] === it.id && !gesturing && !cropping}
               editing={editingId === it.id}
               hidden={cropping?.id === it.id}
-              linked={it.type === 'note' && !!it.attachedTo && selected.length === 1 && selected[0] === it.attachedTo}
+              appear={live.current}
               magnet={magnetId === it.id || pulse?.image === it.id}
               pulse={pulse?.note === it.id}
               onPointerDown={onItemPointerDown}
@@ -849,6 +899,15 @@ export default function Board({ id }: { id: string }) {
               onMeasure={onMeasure}
             />
           ))}
+          {ghosts.map((g) => (
+            <div
+              key={'ghost:' + g.id}
+              className={`item item-${g.type} item-ghost`}
+              style={{ left: g.x, top: g.y, width: g.w, height: g.type === 'image' ? g.h : undefined, zIndex: g.z }}
+            >
+              {g.type === 'image' ? <CroppedImage item={g} /> : <NoteBody item={g} />}
+            </div>
+          ))}
           {cropItem && cropping && (
             <div style={{ position: 'absolute', zIndex: 1e6 }}>
               <CropOverlay item={cropItem} draft={cropping.draft} zoom={vp.zoom} setDraft={(draft) => setCropping({ ...cropping, draft })} />
@@ -856,58 +915,40 @@ export default function Board({ id }: { id: string }) {
           )}
         </div>
 
-        {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} />}
+        <Presence id={marquee ? 'marquee' : null} ms={140}>
+          {marquee && <Marquee {...marquee} />}
+        </Presence>
 
-        {barPos && !gesturing && !editingId && !panning && (cropping ? (
-          <CropBar pos={barPos} mode={cropping.mode} onReset={() => setCropping({ ...cropping, draft: FULL_CROP })} onCancel={() => finishCrop(false)} onDone={() => finishCrop(true)} />
-        ) : selItems.length > 0 ? (
-          <SelectionBar
-            pos={barPos}
-            items={selItems}
-            onCrop={() => selItems[0].type === 'image' && startCrop(selItems[0])}
-            onDetail={() => selItems[0].type === 'image' && startDetail(selItems[0])}
-            onTidy={tidy}
-            onAddNote={addNoteBeside}
-            onTags={(tags) => patch((i) => (i.type === 'image' ? { ...i, tags } : i))}
-            onNote={(p) => patch((i) => (i.type === 'note' ? { ...i, ...p } : i))}
-            onFront={() => reorder(true)}
-            onBack={() => reorder(false)}
-            onDuplicate={duplicate}
-            onDelete={del}
-          />
-        ) : null)}
+        <Presence id={barId}>
+          {barId &&
+            barPos &&
+            (cropping ? (
+              <CropBar pos={barPos} mode={cropping.mode} onReset={() => setCropping({ ...cropping, draft: FULL_CROP })} onCancel={() => finishCrop(false)} onDone={() => finishCrop(true)} />
+            ) : (
+              <SelectionBar
+                pos={barPos}
+                items={selItems}
+                onCrop={() => selItems[0].type === 'image' && startCrop(selItems[0])}
+                onDetail={() => selItems[0].type === 'image' && startDetail(selItems[0])}
+                onTidy={tidy}
+                onAddNote={addNoteBeside}
+                onTags={(tags) => patch((i) => (i.type === 'image' ? { ...i, tags } : i))}
+                onNote={(p) => patch((i) => (i.type === 'note' ? { ...i, ...p } : i))}
+                onFront={() => reorder(true)}
+                onBack={() => reorder(false)}
+                onDuplicate={duplicate}
+                onDelete={del}
+              />
+            ))}
+        </Presence>
 
-        {empty && (
-          <div className="board-empty">
-            <div className="board-empty-card glass" onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-              <div className="board-empty-icon">
-                <UploadCloud size={30} strokeWidth={1.4} />
-              </div>
-              <h2>Drop inspiration here</h2>
-              <p>
-                Drag images straight from Pinterest, Grailed or your desktop. <br />
-                Paste with <kbd>⌘</kbd>
-                <kbd>V</kbd>, or double-click anywhere to write a note.
-              </p>
-              <div className="board-empty-actions">
-                <button className="btn btn-primary" onClick={() => fileInput.current?.click()}>
-                  <ImagePlus size={17} /> Add Images
-                </button>
-                <button className="btn" onClick={() => addNote()}>
-                  <Type size={17} /> Add Note
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        <Presence id={empty ? 'empty' : null} ms={260}>
+          {empty && <EmptyState onImages={() => fileInput.current?.click()} onNote={() => addNote()} />}
+        </Presence>
 
-        {dropping && (
-          <div className="drop-overlay">
-            <div className="drop-pill glass">
-              <ImagePlus size={18} /> Drop to add to board
-            </div>
-          </div>
-        )}
+        <Presence id={dropping ? 'drop' : null}>
+          {dropping && <DropOverlay />}
+        </Presence>
       </div>
 
       {/* chrome */}
@@ -957,7 +998,7 @@ export default function Board({ id }: { id: string }) {
         </div>
       </div>
 
-      {showKeys && <Shortcuts onClose={() => setShowKeys(false)} />}
+      <Presence id={showKeys ? 'keys' : null}>{showKeys && <Shortcuts onClose={() => setShowKeys(false)} />}</Presence>
 
       <div className="dock glass">
         <button className="dock-btn" onClick={() => fileInput.current?.click()} title="Add images">
@@ -969,21 +1010,22 @@ export default function Board({ id }: { id: string }) {
           <span>Note</span>
         </button>
         <span className="dock-sep" />
+        <button
+          className={`dock-icon dock-tool${tool === 'hand' ? ' active' : ''}`}
+          onClick={() => setTool((t) => (t === 'hand' ? 'select' : 'hand'))}
+          title={tool === 'hand' ? 'Pan tool on: drag to move around  H' : 'Pan tool  H'}
+          aria-pressed={tool === 'hand'}
+        >
+          <Hand size={17} />
+        </button>
+        <span className="dock-sep" />
         <button className="dock-icon" onClick={() => zoomBy(0.8)} title="Zoom out  ⌘−">
           <Minus size={17} />
         </button>
         <button
           className="dock-zoom"
           title="Reset to 100%  ⌘0"
-          onClick={() => {
-            const r = rect()
-            const v = vpRef.current
-            const sx = r.width / 2
-            const sy = r.height / 2
-            const wx = (sx - v.x) / v.zoom
-            const wy = (sy - v.y) / v.zoom
-            animateVp({ zoom: 1, x: sx - wx, y: sy - wy })
-          }}
+          onClick={() => zoomCenterTo(() => 1)}
         >
           {Math.round(vp.zoom * 100)}%
         </button>
@@ -1012,9 +1054,11 @@ export default function Board({ id }: { id: string }) {
 }
 
 const KEYS: [string, string][] = [
-  ['Pan', 'Drag canvas · Scroll'],
+  ['Select', 'Click · Drag canvas'],
+  ['Add to selection', '⇧ Click · ⇧ Drag'],
+  ['Pan', 'Middle-drag · Space-drag · Scroll'],
+  ['Pan tool', 'H (V to go back)'],
   ['Zoom', 'Pinch · ⌘ Scroll'],
-  ['Select multiple', '⇧ Click · ⇧ Drag'],
   ['Crop image', 'Double-click · C'],
   ['Add detail close-up', 'D'],
   ['Tidy selection', 'T'],
@@ -1028,8 +1072,9 @@ const KEYS: [string, string][] = [
 ]
 
 function Shortcuts({ onClose }: { onClose: () => void }) {
+  const leaving = useLeaving()
   return (
-    <div className="shortcuts glass" onPointerDown={(e) => e.stopPropagation()}>
+    <div className={`shortcuts glass${leaving ? ' leaving' : ''}`} onPointerDown={(e) => e.stopPropagation()}>
       <div className="shortcuts-head">
         <span>Shortcuts</span>
         <button className="link-btn" onClick={onClose}>
@@ -1042,6 +1087,49 @@ function Shortcuts({ onClose }: { onClose: () => void }) {
           <span className="shortcut-keys">{b}</span>
         </div>
       ))}
+    </div>
+  )
+}
+
+function Marquee({ x, y, w, h }: { x: number; y: number; w: number; h: number }) {
+  const leaving = useLeaving()
+  return <div className={`marquee${leaving ? ' leaving' : ''}`} style={{ left: x, top: y, width: w, height: h }} />
+}
+
+function EmptyState({ onImages, onNote }: { onImages: () => void; onNote: () => void }) {
+  const leaving = useLeaving()
+  return (
+    <div className="board-empty">
+      <div className={`board-empty-card glass${leaving ? ' leaving' : ''}`} onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+        <div className="board-empty-icon">
+          <UploadCloud size={30} strokeWidth={1.4} />
+        </div>
+        <h2>Drop inspiration here</h2>
+        <p>
+          Drag images straight from Pinterest, Grailed or your desktop. <br />
+          Paste with <kbd>⌘</kbd>
+          <kbd>V</kbd>, or double-click anywhere to write a note.
+        </p>
+        <div className="board-empty-actions">
+          <button className="btn btn-primary" onClick={onImages}>
+            <ImagePlus size={17} /> Add Images
+          </button>
+          <button className="btn" onClick={onNote}>
+            <Type size={17} /> Add Note
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DropOverlay() {
+  const leaving = useLeaving()
+  return (
+    <div className={`drop-overlay${leaving ? ' leaving' : ''}`}>
+      <div className="drop-pill glass">
+        <ImagePlus size={18} /> Drop to add to board
+      </div>
     </div>
   )
 }

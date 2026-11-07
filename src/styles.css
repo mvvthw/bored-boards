@@ -577,23 +577,23 @@ kbd {
   -webkit-user-select: none;
 }
 /* ---------- cursors ----------
-   Empty canvas drags to pan → open hand. Clickable objects → pointer, closed hand while moving. Text → I-beam.
-   Modifiers preview what a press will do; during any drag one cursor is locked app-wide. */
+   Empty canvas drags to box-select → arrow. Clickable objects → pointer, closed hand while moving. Text → I-beam.
+   The pan tool (or holding Space) turns everything on the board into an open hand.
+   During any drag one cursor is locked app-wide. */
 .canvas {
-  cursor: grab;
-}
-.canvas.mod-shift {
-  cursor: crosshair;
+  cursor: default;
 }
 .canvas.mod-alt .item {
   cursor: copy;
 }
-.canvas.mod-space,
-.canvas.mod-space * {
+:is(.canvas.hand, .canvas.mod-space),
+:is(.canvas.hand, .canvas.mod-space) .world,
+:is(.canvas.hand, .canvas.mod-space) .world * {
   cursor: grab !important;
 }
 .canvas.panning,
-.canvas.panning * {
+.canvas.panning .world,
+.canvas.panning .world * {
   cursor: grabbing !important;
 }
 :is(.context-bar, .board-empty-card, .tag-picker) {
@@ -660,6 +660,30 @@ html.cursor-locked * {
   border: calc(1.5px * var(--inv)) solid rgba(255, 255, 255, 0.92);
   border-radius: calc(6px * var(--inv));
   pointer-events: none;
+  opacity: 0;
+  transition: opacity 140ms var(--ease-ui);
+}
+.item.selected .sel-outline {
+  opacity: 1;
+}
+/* images fade in once loaded instead of popping */
+.cropped img.fade {
+  opacity: 0;
+  transition: opacity 320ms var(--ease);
+}
+.cropped img.fade.loaded {
+  opacity: 1;
+}
+/* removed items fade out where they were */
+.item-ghost {
+  pointer-events: none;
+  animation: item-out 200ms var(--ease-ui) forwards;
+}
+@keyframes item-out {
+  to {
+    opacity: 0;
+    scale: 0.94;
+  }
 }
 /* tidy: items glide to their new spots */
 .canvas.tidying .item {
@@ -707,15 +731,6 @@ html.cursor-locked * {
     transform: scale(0.985);
   }
 }
-/* notes attached to the selected image show a faint dashed outline */
-.item-note.linked::before {
-  content: '';
-  position: absolute;
-  inset: calc(-3px * var(--inv));
-  border: calc(1px * var(--inv)) dashed rgba(255, 255, 255, 0.4);
-  border-radius: calc(14px + 3px * var(--inv));
-  pointer-events: none;
-}
 /* one ring only: while editing there is no selection outline, and glass notes show
    selection by brightening their own rim instead of adding a second one around it */
 .item.editing .sel-outline,
@@ -735,56 +750,49 @@ html.cursor-locked * {
     0 10px 30px rgba(0, 0, 0, 0.4);
 }
 
+/* resize: no visible knobs — invisible grab zones on the corners (images) or sides (notes),
+   revealed by the resize cursor. */
 .handle {
   position: absolute;
-  width: calc(12px * var(--inv));
-  height: calc(12px * var(--inv));
-  margin: calc(-6px * var(--inv));
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 0 0 calc(1px * var(--inv)) rgba(0, 0, 0, 0.35), 0 calc(2px * var(--inv)) calc(6px * var(--inv)) rgba(0, 0, 0, 0.5);
+  width: calc(20px * var(--inv));
+  height: calc(20px * var(--inv));
+  margin: calc(-10px * var(--inv));
   z-index: 2;
 }
-.handle::after {
-  /* larger hit area */
-  content: '';
-  position: absolute;
-  inset: calc(-8px * var(--inv));
-}
 .h-nw {
-  left: calc(-3px * var(--inv));
-  top: calc(-3px * var(--inv));
+  left: 0;
+  top: 0;
   cursor: nwse-resize;
 }
 .h-se {
-  right: calc(-3px * var(--inv));
-  bottom: calc(-3px * var(--inv));
+  right: 0;
+  bottom: 0;
   cursor: nwse-resize;
 }
 .h-ne {
-  right: calc(-3px * var(--inv));
-  top: calc(-3px * var(--inv));
+  right: 0;
+  top: 0;
   cursor: nesw-resize;
 }
 .h-sw {
-  left: calc(-3px * var(--inv));
-  bottom: calc(-3px * var(--inv));
+  left: 0;
+  bottom: 0;
   cursor: nesw-resize;
 }
 .h-e,
 .h-w {
-  top: 50%;
-  width: calc(8px * var(--inv));
-  height: calc(22px * var(--inv));
-  margin: calc(-11px * var(--inv)) calc(-4px * var(--inv));
-  border-radius: calc(4px * var(--inv));
+  top: 0;
+  bottom: 0;
+  width: calc(12px * var(--inv));
+  height: auto;
+  margin: 0 calc(-6px * var(--inv));
   cursor: ew-resize;
 }
 .h-e {
-  right: calc(-3px * var(--inv));
+  right: 0;
 }
 .h-w {
-  left: calc(-3px * var(--inv));
+  left: 0;
 }
 
 .item-tags {
@@ -824,6 +832,7 @@ html.cursor-locked * {
   letter-spacing: -0.015em;
 }
 .note-glass {
+  transition: box-shadow 160ms var(--ease-ui);
   color: var(--text);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.06));
   -webkit-backdrop-filter: blur(24px) saturate(170%);
@@ -863,6 +872,7 @@ html.cursor-locked * {
 /* crop */
 .crop-frame {
   position: absolute;
+  animation: fade 220ms var(--ease);
 }
 .crop-dim {
   position: absolute;
@@ -981,8 +991,10 @@ html.cursor-locked * {
   padding: 0 5px;
   border-radius: 999px;
   transform: translate(-50%, -100%);
+  /* (0,0) is the edge nearest the selection in both placements, so scaling grows from/shrinks toward it */
+  transform-origin: 0 0;
   white-space: nowrap;
-  animation: bar-in 0.32s var(--spring);
+  animation: bar-in 0.3s var(--spring);
 }
 .context-bar.below {
   transform: translate(-50%, 0);
@@ -994,7 +1006,7 @@ html.cursor-locked * {
 @keyframes bar-in {
   from {
     opacity: 0;
-    scale: 0.9;
+    scale: 0.92;
   }
 }
 .bar-label {
@@ -1422,6 +1434,30 @@ html.cursor-locked * {
   }
 }
 
+/* ---------- exits ----------
+   Anything that pops in also leaves: <Presence> keeps it mounted briefly with .leaving. */
+@keyframes pop-out {
+  to {
+    opacity: 0;
+    scale: 0.96;
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+.leaving {
+  pointer-events: none !important;
+  animation: pop-out 170ms var(--ease-ui) forwards !important;
+}
+:is(.dialog-backdrop, .drop-overlay, .marquee).leaving {
+  animation-name: fade-out !important;
+}
+.dialog-backdrop.leaving .dialog {
+  animation: pop-out 170ms var(--ease-ui) forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1472,9 +1508,14 @@ html.cursor-locked * {
 .board-card:active {
   transform: scale(0.992);
 }
-:is(.icon-btn, .bar-btn).active,
+:is(.icon-btn, .bar-btn, .dock-icon).active,
 .title-pill.editing {
   --hl: 1.6;
+}
+.dock-icon.active {
+  color: var(--text);
+  background-color: rgba(255, 255, 255, calc(0.16 + var(--hl) * 0.04));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 
 /* ghost: transparent at rest, soft fill on hover */

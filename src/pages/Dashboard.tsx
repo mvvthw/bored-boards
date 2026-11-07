@@ -5,7 +5,7 @@ import { collectGarbage, createBoard, deleteBoard, duplicateBoard, listBoardsWit
 import { signOut, useSession } from '../lib/auth'
 import { navigate, timeAgo } from '../lib/hooks'
 import { BoardThumb } from '../components/ItemViews'
-import { Dialog, Menu, TextField, toast, useSize, type MenuItem } from '../components/ui'
+import { Dialog, Menu, Presence, TextField, toast, useSize, type MenuItem } from '../components/ui'
 import { Wordmark } from '../components/Logo'
 
 type Row = BoardMeta & { data: BoardData }
@@ -57,14 +57,16 @@ export default function Dashboard() {
               <UserRound size={17} />
             </button>
           </div>
-          {account && (
-            <Menu
-              anchor={account}
-              header={session?.user.email}
-              items={[{ label: 'Sign out', icon: <LogOut size={15} />, onSelect: signOut }]}
-              onClose={() => setAccount(null)}
-            />
-          )}
+          <Presence id={account ? 'account' : null}>
+            {account && (
+              <Menu
+                anchor={account}
+                header={session?.user.email}
+                items={[{ label: 'Sign out', icon: <LogOut size={15} />, onSelect: signOut }]}
+                onClose={() => setAccount(null)}
+              />
+            )}
+          </Presence>
         </div>
       </header>
 
@@ -194,7 +196,7 @@ function BoardCard({ row, onRename, onDuplicate, onDelete }: { row: Row; onRenam
           {count - images > 0 && ` · ${count - images} ${count - images === 1 ? 'note' : 'notes'}`} · {timeAgo(row.updatedAt)}
         </div>
       </div>
-      {menu && <Menu anchor={menu} items={menuItems} onClose={() => setMenu(null)} />}
+      <Presence id={menu ? 'menu' : null}>{menu && <Menu anchor={menu} items={menuItems} onClose={() => setMenu(null)} />}</Presence>
     </div>
   )
 }

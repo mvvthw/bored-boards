@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import type { Item, NoteItem, NoteSize, NoteStyle } from '../lib/types'
 import { TAG_PRESETS } from '../lib/types'
-import { TextField } from './ui'
+import { Presence, TextField, useLeaving } from './ui'
 
 type Common = {
   pos: { left: number; top: number; below: boolean }
@@ -79,7 +79,7 @@ export function SelectionBar({
           <BarBtn icon={<Tag size={16} />} label="Tag" active={tagsOpen} onClick={() => setTagsOpen((v) => !v)} />
           <BarBtn icon={<StickyNote size={16} />} label="Note" onClick={onAddNote} />
           {solo.source && <BarBtn icon={<ExternalLink size={16} />} title="Open source" onClick={() => window.open(solo.source, '_blank', 'noopener')} />}
-          {tagsOpen && <TagPicker tags={solo.tags} onChange={onTags} below={pos.below || pos.top < 330} />}
+          <Presence id={tagsOpen ? 'tags' : null}>{tagsOpen && <TagPicker tags={solo.tags} onChange={onTags} below={pos.below || pos.top < 330} />}</Presence>
         </>
       )}
 
@@ -118,10 +118,11 @@ export function SelectionBar({
 function TagPicker({ tags, onChange, below }: { tags: string[]; onChange: (t: string[]) => void; below: boolean }) {
   const [custom, setCustom] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const leaving = useLeaving()
   const all = [...new Set([...TAG_PRESETS, ...tags])]
   const toggle = (t: string) => onChange(tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t])
   return (
-    <div className={`tag-picker glass${below ? ' below' : ''}`} onPointerDown={(e) => e.stopPropagation()}>
+    <div className={`tag-picker glass${below ? ' below' : ''}${leaving ? ' leaving' : ''}`} onPointerDown={(e) => e.stopPropagation()}>
       <div className="tag-picker-title">What caught your eye?</div>
       <div className="chips">
         {all.map((t) => (
@@ -149,6 +150,7 @@ function TagPicker({ tags, onChange, below }: { tags: string[]; onChange: (t: st
 function Bar({ pos, children }: Common & { children: React.ReactNode }) {
   // Nudge sideways so the bar never runs off either edge of the canvas.
   const ref = useRef<HTMLDivElement>(null)
+  const leaving = useLeaving()
   const [shift, setShift] = useState(0)
   useLayoutEffect(() => {
     const el = ref.current
@@ -162,7 +164,7 @@ function Bar({ pos, children }: Common & { children: React.ReactNode }) {
   return (
     <div
       ref={ref}
-      className={`context-bar glass${pos.below ? ' below' : ''}`}
+      className={`context-bar glass${pos.below ? ' below' : ''}${leaving ? ' leaving' : ''}`}
       style={{ left: pos.left + shift, top: pos.top }}
       onPointerDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
