@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronLeft, Hand, ImagePlus, Keyboard, Maximize, Minus, Pencil, Plus, Type, UploadCloud, UserPlus } from 'lucide-react'
+import { Check, ChevronLeft, Hand, ImagePlus, Keyboard, Maximize, Minus, Pencil, Plus, Tags, Type, UploadCloud, UserPlus, X } from 'lucide-react'
 import type { BoardMeta, Crop, ImageItem, Item, NoteItem, Viewport } from '../lib/types'
 import { FULL_CROP } from '../lib/types'
 import { getBoardData, getBoardMeta, itemsBounds, saveBoardData, saveBoardMeta, uid } from '../lib/db'
@@ -89,6 +89,9 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
   const [dropping, setDropping] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [showKeys, setShowKeys] = useState(false)
+  // Tags to spotlight; everything else fades back. Local to you, not synced.
+  const [tagFilter, setTagFilter] = useState<string[]>([])
+  const [filterOpen, setFilterOpen] = useState(false)
   // 'hand': a plain left-drag pans, anywhere. Middle-drag and Space-drag pan in either tool.
   const [tool, setTool] = useState<'select' | 'hand'>('select')
   const toolRef = useRef(tool)
@@ -574,6 +577,14 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
 
   const spaceHeld = useRef(false)
 
+  // The filter popover closes on any press outside it (images stop propagation, so listen on window).
+  useEffect(() => {
+    if (!filterOpen) return
+    const close = (e: PointerEvent) => !(e.target as Element).closest?.('.tag-filter, .dock-filter') && setFilterOpen(false)
+    window.addEventListener('pointerdown', close, true)
+    return () => window.removeEventListener('pointerdown', close, true)
+  }, [filterOpen])
+
   const onCanvasPointerDown = (e: React.PointerEvent) => {
     if (e.button === 2) return
     if (cropping) finishCrop()
@@ -887,6 +898,7 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
       } else if (e.key === 'Escape') {
         setSelected([])
         setShowKeys(false)
+        setFilterOpen(false)
       } else if (e.key === 'Enter' && selRef.current.length === 1) {
         const it = itemsRef.current.find((i) => i.id === selRef.current[0])
         if (it?.type === 'note') {
@@ -981,6 +993,35 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
   /* ---------- render ---------- */
 
   const sorted = useMemo(() => [...items].sort((a, b) => a.z - b.z), [items])
+
+  /* ---------- tag filter ---------- */
+
+  const tagCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const i of items) if (i.type === 'image') for (const t of i.tags) m.set(t, (m.get(t) ?? 0) + 1)
+    return [...m].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  }, [items])
+  // Images with any chosen tag, plus the notes pinned to them.
+  const matchIds = useMemo(() => {
+    if (!tagFilter.length) return null
+    const ids = new Set(items.filter((i) => i.type === 'image' && i.tags.some((t) => tagFilter.includes(t))).map((i) => i.id))
+    for (const i of items) if (i.type === 'note' && i.attachedTo && ids.has(i.attachedTo)) ids.add(i.id)
+    return ids
+  }, [items, tagFilter])
+  // A tag nobody uses anymore (removed here or by a collaborator) drops out of the filter.
+  useEffect(() => {
+    setTagFilter((f) => (f.every((t) => tagCounts.some(([n]) => n === t)) ? f : f.filter((t) => tagCounts.some(([n]) => n === t))))
+  }, [tagCounts])
+  const toggleTag = (t: string) => {
+    const next = tagFilter.includes(t) ? tagFilter.filter((x) => x !== t) : [...tagFilter, t]
+    setTagFilter(next)
+    // Bring the matches into view.
+    const hits = itemsRef.current.filter((i) => i.type === 'image' && i.tags.some((x) => next.includes(x)))
+    if (hits.length) {
+      const ids = withAttached(hits.map((h) => h.id), itemsRef.current)
+      fitTo(itemsRef.current.filter((i) => ids.has(i.id)))
+    }
+  }
   const cropItem = cropping ? (items.find((i) => i.id === cropping.id) as ImageItem | undefined) : undefined
 
   const barPos = (() => {
@@ -1044,6 +1085,7 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
               editing={editingId === it.id}
               hidden={cropping?.id === it.id}
               appear={live.current}
+              dimmed={!!matchIds && !matchIds.has(it.id)}
               magnet={magnetId === it.id || pulse?.image === it.id}
               pulse={pulse?.note === it.id}
               onPointerDown={onItemPointerDown}
@@ -1190,6 +1232,18 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
         >
           <Hand size={17} />
         </button>
+        <button
+          className={`dock-icon dock-filter${tagFilter.length || filterOpen ? ' active' : ''}`}
+          onClick={() => setFilterOpen((v) => !v)}
+          title="Filter by tag"
+          aria-expanded={filterOpen}
+        >
+          <Tags size={17} />
+          {tagFilter.length > 0 && <span className="dock-badge">{tagFilter.length}</span>}
+        </button>
+        <Presence id={filterOpen ? 'filter' : null}>
+          {filterOpen && <TagFilter tags={tagCounts} active={tagFilter} onToggle={toggleTag} onClear={() => setTagFilter([])} />}
+        </Presence>
         <span className="dock-sep" />
         <button className="dock-icon" onClick={() => zoomBy(0.8)} title="Zoom out  ⌘−">
           <Minus size={17} />
@@ -1319,6 +1373,33 @@ function RemoteCursor({ name, color, x, y }: { name: string; color: string; x: n
         <path d="M1.5 1.5 L16 9.2 L9.2 10.8 L6.2 17.8 Z" fill="var(--c)" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" />
       </svg>
       <span className="remote-cursor-name">{name}</span>
+    </div>
+  )
+}
+
+function TagFilter({ tags, active, onToggle, onClear }: { tags: [string, number][]; active: string[]; onToggle: (t: string) => void; onClear: () => void }) {
+  const leaving = useLeaving()
+  return (
+    <div className={`tag-filter glass${leaving ? ' leaving' : ''}`} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="tag-filter-head">
+        <span className="tag-picker-title">Show only</span>
+        {active.length > 0 && (
+          <button className="link-btn tag-filter-clear" onClick={onClear}>
+            <X size={13} /> Clear
+          </button>
+        )}
+      </div>
+      {tags.length ? (
+        <div className="chips">
+          {tags.map(([t, n]) => (
+            <button key={t} className={`chip${active.includes(t) ? ' on' : ''}`} onClick={() => onToggle(t)}>
+              {t} <span className="chip-count">{n}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="tag-filter-empty">Tag images (select one → Tag) and you can filter the board by them here.</p>
+      )}
     </div>
   )
 }

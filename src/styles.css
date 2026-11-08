@@ -2041,3 +2041,70 @@ button:focus:not(:focus-visible) {
     padding: 0 12px;
   }
 }
+
+/* tag filter */
+.item {
+  transition: opacity 240ms var(--ease-ui);
+}
+.item.dimmed {
+  opacity: 0.12;
+}
+.dock-filter {
+  position: relative;
+}
+.dock-badge {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 16px;
+  color: #000;
+  background: #ececef;
+  animation: pop 0.3s var(--spring);
+}
+.tag-filter {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 12px);
+  width: 320px;
+  margin-left: -160px;
+  padding: 14px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(46, 46, 50, 0.86), rgba(24, 24, 27, 0.92));
+  transform-origin: 50% 100%;
+  animation: pop 0.32s var(--spring);
+}
+.tag-filter > * {
+  position: relative;
+  z-index: 1;
+}
+.tag-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.tag-filter-head .tag-picker-title {
+  margin: 0 2px;
+}
+.tag-filter-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+}
+.chip-count {
+  margin-left: 3px;
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+}
+.tag-filter-empty {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-2);
+}

@@ -12,6 +12,7 @@ type Props = {
   editing: boolean
   hidden: boolean
   appear: boolean // added after the board loaded → animate in
+  dimmed: boolean // filtered out by the tag filter
   magnet: boolean // image a note will snap onto
   pulse: boolean // note that just attached
   onPointerDown: (e: React.PointerEvent, item: Item) => void
@@ -48,7 +49,7 @@ function CanvasItem(p: Props) {
   return (
     <div
       ref={ref}
-      className={`item item-${item.type}${p.selected ? ' selected' : ''}${p.editing ? ' editing' : ''}${p.magnet ? ' magnet' : ''}${p.pulse ? ' pulse' : ''}`}
+      className={`item item-${item.type}${p.selected ? ' selected' : ''}${p.editing ? ' editing' : ''}${p.magnet ? ' magnet' : ''}${p.dimmed ? ' dimmed' : ''}${p.pulse ? ' pulse' : ''}`}
       style={{
         left: item.x,
         top: item.y,
