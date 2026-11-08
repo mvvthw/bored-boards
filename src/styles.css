@@ -1793,3 +1793,251 @@ button:focus:not(:focus-visible) {
   line-height: 1.5;
   max-width: 290px;
 }
+
+/* ============================================================
+   Multiplayer & profiles
+   ============================================================ */
+
+.avatar {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  border-radius: 50%;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: #fff;
+  background: radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--c) 70%, #fff), var(--c) 55%, color-mix(in srgb, var(--c) 70%, #000));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  user-select: none;
+}
+.account-btn .avatar {
+  width: 30px;
+  height: 30px;
+}
+
+/* who's here, stacked */
+.peers {
+  display: flex;
+  padding-right: 2px;
+}
+.peers .avatar {
+  box-shadow: 0 0 0 2px var(--canvas), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  animation: pop 0.35s var(--spring);
+}
+.peers .avatar + .avatar {
+  margin-left: -8px;
+}
+.share-btn {
+  gap: 7px;
+  padding: 0 16px 0 13px;
+}
+
+/* live cursors */
+.remote-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 35;
+  pointer-events: none;
+  transition: transform 90ms linear;
+  animation: fade 0.2s var(--ease);
+  will-change: transform;
+}
+.remote-cursor svg {
+  display: block;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+}
+.remote-cursor-name {
+  position: absolute;
+  left: 14px;
+  top: 18px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #fff;
+  background: var(--c);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* share dialog */
+.invite-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.invite-loading {
+  height: 40px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.invite-link {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), inset 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.invite-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: all;
+}
+.invite-link svg {
+  flex: none;
+}
+.invite-copy {
+  flex: none;
+  min-width: 108px;
+}
+.share-link-actions {
+  display: flex;
+  gap: 16px;
+  margin: 10px 4px 0;
+  font-size: 13px;
+}
+.share-link-actions .link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.share-note {
+  color: var(--text-2);
+  font-size: 13px;
+}
+.members {
+  margin-top: 22px;
+}
+.members-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 2px 6px;
+}
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 2px;
+  border-top: 1px solid var(--sep);
+  animation: fade 0.25s var(--ease);
+}
+.member-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.member-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.member-you,
+.member-handle,
+.member-role {
+  color: var(--text-2);
+  font-weight: 400;
+  font-size: 13px;
+}
+.member-remove {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+}
+
+/* profile dialog */
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.profile-head .dialog-text {
+  margin: 2px 0 0;
+}
+.profile-fields {
+  display: grid;
+  gap: 10px;
+}
+.swatches {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 2px 0;
+}
+.swatch-dot {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--c);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  transition: transform var(--dur-press) var(--ease-ui), box-shadow var(--dur) var(--ease-ui);
+}
+.swatch-dot:hover {
+  transform: scale(1.08);
+}
+.swatch-dot.on {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--c);
+}
+.btn:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* dashboard & join */
+.shared-badge {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.shared-badge > * {
+  position: relative;
+  z-index: 1;
+}
+.join-by {
+  margin-top: 14px;
+}
+.join-title {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .share-btn span,
+  .peers {
+    display: none;
+  }
+  .share-btn {
+    padding: 0 12px;
+  }
+}

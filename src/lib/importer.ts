@@ -1,6 +1,6 @@
 import { putAsset } from './db'
 
-export type Imported = { assetId?: string; src?: string; natW: number; natH: number; source?: string }
+export type Imported = { assetId?: string; assetOwner?: string; src?: string; natW: number; natH: number; source?: string }
 
 function measure(url: string): Promise<{ w: number; h: number }> {
   return new Promise((resolve, reject) => {
@@ -12,11 +12,11 @@ function measure(url: string): Promise<{ w: number; h: number }> {
 }
 
 export async function importFile(file: Blob): Promise<Imported> {
-  const assetId = await putAsset(file)
+  const { id: assetId, owner: assetOwner } = await putAsset(file)
   const tmp = URL.createObjectURL(file)
   try {
     const { w, h } = await measure(tmp)
-    return { assetId, natW: w, natH: h }
+    return { assetId, assetOwner, natW: w, natH: h }
   } finally {
     URL.revokeObjectURL(tmp)
   }

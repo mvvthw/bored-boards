@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronLeft, Hand, ImagePlus, Keyboard, Maximize, Minus, Pencil, Plus, Type, UploadCloud } from 'lucide-react'
+import { Check, ChevronLeft, Hand, ImagePlus, Keyboard, Maximize, Minus, Pencil, Plus, Type, UploadCloud, UserPlus } from 'lucide-react'
 import type { BoardMeta, Crop, ImageItem, Item, NoteItem, Viewport } from '../lib/types'
 import { FULL_CROP } from '../lib/types'
 import { getBoardData, getBoardMeta, itemsBounds, saveBoardData, saveBoardMeta, uid } from '../lib/db'
@@ -11,7 +11,11 @@ import CanvasItem, { type ResizeHandle } from '../components/CanvasItem'
 import CropOverlay, { applyCrop, fullFrame } from '../components/CropOverlay'
 import { CropBar, SelectionBar } from '../components/ContextBar'
 import { InlineName } from './Dashboard'
-import { CroppedImage, NoteBody } from '../components/ItemViews'
+import { AssetOwnerCtx, CroppedImage, NoteBody } from '../components/ItemViews'
+import ShareDialog from '../components/ShareDialog'
+import { Avatar } from '../components/Avatar'
+import { useBoardChannel, type Ops } from '../lib/realtime'
+import { colorFor, nameOf, useProfile } from '../lib/profile'
 import { EXIT_MS, Presence, toast, useLeaving, useSize } from '../components/ui'
 
 const MIN_ZOOM = 0.08
@@ -24,7 +28,52 @@ const gridSize = (z: number) => {
   return g
 }
 
-export default function Board({ id }: { id: string }) {
+type Patch = Map<string, Item | null>
+type Entry = { before: Patch; after: Patch }
+
+/** What changed between two item lists (by identity), optionally limited to some ids. */
+function diffEntry(before: Item[], after: Item[], only?: Iterable<string>): Entry | null {
+  const b = new Map(before.map((i) => [i.id, i]))
+  const a = new Map(after.map((i) => [i.id, i]))
+  const ids = only ? new Set(only) : new Set([...b.keys(), ...a.keys()])
+  const e: Entry = { before: new Map(), after: new Map() }
+  for (const id of ids) {
+    const x = b.get(id) ?? null
+    const y = a.get(id) ?? null
+    if (x === y) continue
+    e.before.set(id, x)
+    e.after.set(id, y)
+  }
+  return e.before.size ? e : null
+}
+
+/** Put the patched items into `list`, leaving everything else (e.g. a collaborator's edits) alone. */
+function applyPatch(list: Item[], patch: Patch): Item[] {
+  const seen = new Set<string>()
+  const out: Item[] = []
+  for (const i of list) {
+    if (!patch.has(i.id)) out.push(i)
+    else {
+      seen.add(i.id)
+      const v = patch.get(i.id)
+      if (v) out.push(v)
+    }
+  }
+  for (const [id, v] of patch) if (v && !seen.has(id)) out.push(v)
+  return out
+}
+
+const vpKey = (id: string) => `bored:vp:${id}`
+function storedVp(id: string): Viewport | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(vpKey(id)) ?? 'null')
+    return v && typeof v.zoom === 'number' ? v : null
+  } catch {
+    return null
+  }
+}
+
+export default function Board({ id, user }: { id: string; user: { id: string; email?: string } }) {
   const [meta, setMeta] = useState<BoardMeta | null>(null)
   const [items, _setItems] = useState<Item[]>([])
   const [vp, _setVp] = useState<Viewport>({ x: 0, y: 0, zoom: 1 })
@@ -52,10 +101,50 @@ export default function Board({ id }: { id: string }) {
   const vpRef = useRef(vp)
   const selRef = useRef(selected)
   selRef.current = selected
-  const setItems = useCallback((next: Item[]) => {
+  /* ---------- live sync ----------
+     Every local change is diffed by item identity; the changed ids are sent to collaborators as
+     upsert/remove patches, batched every 50 ms. Changes from others are applied with replaceItems,
+     which doesn't echo them back. */
+  const dirty = useRef(new Set<string>())
+  const flushTimer = useRef(0)
+  const localEdited = useRef(false)
+  const sendOpsRef = useRef<(ops: Ops) => void>(() => {})
+  const flushOps = useCallback(() => {
+    flushTimer.current = 0
+    if (!dirty.current.size) return
+    const byId = new Map(itemsRef.current.map((i) => [i.id, i]))
+    const ops: Ops = { upsert: [], remove: [] }
+    for (const did of dirty.current) {
+      const it = byId.get(did)
+      if (it) ops.upsert.push(it)
+      else ops.remove.push(did)
+    }
+    dirty.current.clear()
+    sendOpsRef.current(ops)
+  }, [])
+  const replaceItems = useCallback((next: Item[]) => {
     itemsRef.current = next
     _setItems(next)
   }, [])
+  const setItems = useCallback(
+    (next: Item[]) => {
+      const prev = itemsRef.current
+      if (prev !== next) {
+        const left = new Map(prev.map((i) => [i.id, i]))
+        for (const i of next) {
+          if (left.get(i.id) !== i) dirty.current.add(i.id)
+          left.delete(i.id)
+        }
+        for (const gone of left.keys()) dirty.current.add(gone)
+        if (dirty.current.size) {
+          localEdited.current = true
+          if (!flushTimer.current) flushTimer.current = window.setTimeout(flushOps, 50)
+        }
+      }
+      replaceItems(next)
+    },
+    [flushOps, replaceItems],
+  )
   const setVp = useCallback((next: Viewport) => {
     vpRef.current = next
     _setVp(next)
@@ -63,10 +152,13 @@ export default function Board({ id }: { id: string }) {
 
   /* ---------- history ---------- */
 
-  const past = useRef<Item[][]>([])
-  const future = useRef<Item[][]>([])
-  const commit = useCallback((before: Item[]) => {
-    past.current.push(before)
+  // Entries are patches of only the items you touched, so undo never rolls back a collaborator's work.
+  const past = useRef<Entry[]>([])
+  const future = useRef<Entry[]>([])
+  const commit = useCallback((before: Item[], after: Item[] = itemsRef.current, only?: Iterable<string>) => {
+    const e = diffEntry(before, after, only)
+    if (!e) return
+    past.current.push(e)
     if (past.current.length > 150) past.current.shift()
     future.current = []
   }, [])
@@ -75,25 +167,21 @@ export default function Board({ id }: { id: string }) {
       const before = itemsRef.current
       const next = fn(before)
       if (next === before) return
-      commit(before)
+      commit(before, next)
       setItems(next)
     },
     [commit, setItems],
   )
-  const undo = () => {
-    const prev = past.current.pop()
-    if (!prev) return
-    future.current.push(itemsRef.current)
-    setItems(prev)
-    setSelected((s) => s.filter((id) => prev.some((i) => i.id === id)))
-  }
-  const redo = () => {
-    const next = future.current.pop()
-    if (!next) return
-    past.current.push(itemsRef.current)
+  const step = (from: React.RefObject<Entry[]>, to: React.RefObject<Entry[]>, side: 'before' | 'after') => {
+    const e = from.current.pop()
+    if (!e) return
+    to.current.push(e)
+    const next = applyPatch(itemsRef.current, e[side])
     setItems(next)
-    setSelected((s) => s.filter((id) => next.some((i) => i.id === id)))
+    setSelected((s) => s.filter((sid) => next.some((i) => i.id === sid)))
   }
+  const undo = () => step(past, future, 'before')
+  const redo = () => step(future, past, 'after')
 
   /* ---------- load & persist ---------- */
 
@@ -103,15 +191,17 @@ export default function Board({ id }: { id: string }) {
       if (!live) return
       if (!m) return navigate('/')
       setMeta(m)
-      setItems(d.items)
-      if (d.viewport) setVp(d.viewport)
+      replaceItems(d.items)
+      // Your own last view of this board, else the owner's saved one, else fit everything.
+      const v = storedVp(id) ?? (m.ownerId === user.id ? d.viewport : undefined)
+      if (v) setVp(v)
       else pendingFit.current = true
       setReady(true)
     })
     return () => {
       live = false
     }
-  }, [id, setItems, setVp])
+  }, [id, user.id, replaceItems, setVp])
 
   // Items that mount after the first load animate in; the initial board just appears.
   const live = useRef(false)
@@ -149,14 +239,22 @@ export default function Board({ id }: { id: string }) {
   const save = useCallback(() => {
     const m = metaRef.current
     if (!m) return
-    saveBoardData({ id, items: itemsRef.current, viewport: vpRef.current })
-    if (savedItems.current && savedItems.current !== itemsRef.current) {
+    try {
+      localStorage.setItem(vpKey(id), JSON.stringify(vpRef.current))
+    } catch {
+      /* private mode etc. */
+    }
+    const changed = savedItems.current !== itemsRef.current
+    const owner = m.ownerId === user.id
+    // Collaborators keep their view to themselves; only the owner's is stored on the board.
+    if (changed || owner) saveBoardData({ id, items: itemsRef.current, viewport: owner ? vpRef.current : undefined })
+    if (savedItems.current && changed) {
       const nm = { ...m, updatedAt: Date.now() }
       metaRef.current = nm
       saveBoardMeta(nm)
     }
     savedItems.current = itemsRef.current
-  }, [id])
+  }, [id, user.id])
 
   useEffect(() => {
     if (!ready) return
@@ -173,6 +271,43 @@ export default function Board({ id }: { id: string }) {
       flush()
     }
   }, [ready, save])
+
+  /* ---------- collaborators ---------- */
+
+  const profile = useProfile()
+  const me = useMemo(
+    () => (profile === undefined ? null : { uid: user.id, name: nameOf(profile, user.email?.split('@')[0] ?? 'Someone'), color: profile?.color ?? colorFor(user.id) }),
+    [profile, user.id, user.email],
+  )
+  const channel = useBoardChannel(ready ? id : '', ready ? me : null, {
+    onOps: ({ upsert, remove }) => {
+      const rm = new Set(remove)
+      const up = new Map(upsert.map((i) => [i.id, i]))
+      const cur = itemsRef.current
+      const have = new Set(cur.map((i) => i.id))
+      const next = cur.filter((i) => !rm.has(i.id)).map((i) => up.get(i.id) ?? i)
+      for (const [uid2, it] of up) if (!have.has(uid2)) next.push(it)
+      replaceItems(next)
+      if (rm.size) setSelected((sel) => (sel.some((x) => rm.has(x)) ? sel.filter((x) => !rm.has(x)) : sel))
+    },
+    onHello: () => channel.sendState(itemsRef.current),
+    // Catch up on anything saved-but-not-yet-loaded when we joined, unless we've already started editing.
+    onState: (list) => {
+      if (!localEdited.current) replaceItems(list)
+    },
+  })
+  sendOpsRef.current = channel.sendOps
+  const cursorAt = useRef(0)
+  const onCanvasPointerMove = (e: React.PointerEvent) => {
+    if (!channel.peers.length) return
+    const now = performance.now()
+    if (now - cursorAt.current < 40) return
+    cursorAt.current = now
+    const p = toWorld(e.clientX, e.clientY)
+    channel.sendCursor(p.x, p.y)
+  }
+  const [sharing, setSharing] = useState(false)
+  const isOwner = meta?.ownerId === user.id
 
   /* ---------- coordinates & viewport ---------- */
 
@@ -309,6 +444,7 @@ export default function Board({ id }: { id: string }) {
       crop: FULL_CROP,
       tags: [],
       assetId: im.assetId,
+      assetOwner: im.assetOwner,
       src: im.src,
       source: im.source,
     }))
@@ -372,12 +508,15 @@ export default function Board({ id }: { id: string }) {
         setItems(itemsRef.current.filter((i) => i.id !== nid))
         setSelected((s) => s.filter((x) => x !== nid))
         if (editIsNew.current) past.current.pop()
-        else commit(before)
+        else commit(before, itemsRef.current, [nid])
         return
       }
       // A new note's typing folds into its "added" entry; edits to existing notes get their own.
       const old = before.find((i) => i.id === nid) as NoteItem | undefined
-      if (!editIsNew.current && old && old.text !== note.text) commit(before)
+      if (editIsNew.current) {
+        const added = past.current.at(-1)
+        if (added?.after.has(nid)) added.after.set(nid, note)
+      } else if (old && old.text !== note.text) commit(before, itemsRef.current, [nid])
     },
     [commit, setItems],
   )
@@ -509,13 +648,18 @@ export default function Board({ id }: { id: string }) {
       const before = itemsRef.current
       const ids = withAttached(sel, before) // attached notes ride along with their image
       const z = vpRef.current.zoom
-      // Alt-drag leaves copies behind.
-      let base = before
+      // Positions come from where things started; everything else is read live so a
+      // collaborator's changes during the drag aren't overwritten.
+      let moving = before.filter((i) => ids.has(i.id))
+      // Alt-drag leaves copies behind (inserted on the first movement).
+      let clones: Item[] = []
       if (e.altKey) {
         let mz = maxZ()
-        const moving = before.filter((i) => ids.has(i.id))
-        base = [...before.filter((i) => !ids.has(i.id)), ...cloneItems(moving, () => ({})), ...moving.map((i) => ({ ...i, z: ++mz }))]
+        clones = cloneItems(moving, () => ({}))
+        moving = moving.map((i) => ({ ...i, z: ++mz }))
       }
+      const orig = new Map(moving.map((i) => [i.id, i]))
+      let cloned = false
       // A lone note being dragged can snap onto an image.
       const magnetNote = sel.length === 1 && item.type === 'note' ? item.id : null
       let target: string | null = null
@@ -523,7 +667,15 @@ export default function Board({ id }: { id: string }) {
         e,
         (dx, dy) => {
           setGesturing(true)
-          const next = base.map((i) => (ids.has(i.id) ? { ...i, x: i.x + dx / z, y: i.y + dy / z } : i))
+          let cur = itemsRef.current
+          if (clones.length && !cloned) {
+            cloned = true
+            cur = [...cur.filter((i) => !ids.has(i.id)), ...clones, ...moving]
+          }
+          const next = cur.map((i) => {
+            const o = orig.get(i.id)
+            return o ? { ...o, x: o.x + dx / z, y: o.y + dy / z } : i
+          })
           setItems(next)
           if (magnetNote) {
             const n = next.find((i) => i.id === magnetNote) as NoteItem
@@ -542,7 +694,7 @@ export default function Board({ id }: { id: string }) {
             if (n.attachedTo !== (target ?? undefined) || top !== n.z)
               setItems(itemsRef.current.map((i) => (i.id === magnetNote ? { ...n, attachedTo: target ?? undefined, z: top } : i)))
           }
-          if (moved) commit(before)
+          if (moved) commit(before, itemsRef.current, [...ids, ...clones.map((c) => c.id)])
           else if (!e.shiftKey && wasSelected && sel.length > 1) setSelected([item.id])
         },
         3,
@@ -558,6 +710,7 @@ export default function Board({ id }: { id: string }) {
       e.stopPropagation()
       const before = itemsRef.current
       const z = vpRef.current.zoom
+      const notes = new Map(before.filter((i) => i.type === 'note' && i.attachedTo === item.id).map((i) => [i.id, i]))
       drag(
         e,
         (dx, dy) => {
@@ -578,17 +731,16 @@ export default function Board({ id }: { id: string }) {
           const kx = w / item.w
           const ky = hh / item.h
           setItems(
-            before.map((i) => {
+            itemsRef.current.map((i) => {
               if (i.id === item.id) return { ...i, x, y, w, h: hh } as Item
-              if (item.type === 'image' && i.type === 'note' && i.attachedTo === item.id)
-                return { ...i, x: x + (i.x - item.x) * kx, y: y + (i.y - item.y) * ky }
-              return i
+              const n = item.type === 'image' ? notes.get(i.id) : undefined
+              return n ? { ...i, x: x + (n.x - item.x) * kx, y: y + (n.y - item.y) * ky } : i
             }),
           )
         },
         (moved) => {
           setGesturing(false)
-          if (moved) commit(before)
+          if (moved) commit(before, itemsRef.current, [item.id, ...notes.keys()])
         },
         0,
         h === 'e' || h === 'w' ? 'ew-resize' : h === 'nw' || h === 'se' ? 'nwse-resize' : 'nesw-resize',
@@ -854,6 +1006,8 @@ export default function Board({ id }: { id: string }) {
         ref={canvasRef}
         className={`canvas${tool === 'hand' ? ' hand' : ''}${panning ? ' panning' : ''}${dropping ? ' dropping' : ''}${tidying ? ' tidying' : ''}`}
         onPointerDown={onCanvasPointerDown}
+        onPointerMove={onCanvasPointerMove}
+        onPointerLeave={() => channel.peers.length && channel.sendCursor(null, null)}
         // Middle-click would otherwise start the browser's autoscroll.
         onMouseDown={(e) => e.button === 1 && e.preventDefault()}
         onDoubleClick={(e) => {
@@ -879,6 +1033,7 @@ export default function Board({ id }: { id: string }) {
           } as React.CSSProperties
         }
       >
+        <AssetOwnerCtx.Provider value={meta?.ownerId}>
         <div className="world" style={{ transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})`, '--inv': 1 / vp.zoom } as React.CSSProperties}>
           {sorted.map((it) => (
             <CanvasItem
@@ -914,6 +1069,13 @@ export default function Board({ id }: { id: string }) {
             </div>
           )}
         </div>
+        </AssetOwnerCtx.Provider>
+
+        {channel.peers.map((p) => {
+          const c = channel.cursors[p.cid]
+          if (!c || c.x == null || c.y == null) return null
+          return <RemoteCursor key={p.cid} name={p.name} color={p.color} x={c.x * vp.zoom + vp.x} y={c.y * vp.zoom + vp.y} />
+        })}
 
         <Presence id={marquee ? 'marquee' : null} ms={140}>
           {marquee && <Marquee {...marquee} />}
@@ -989,14 +1151,24 @@ export default function Board({ id }: { id: string }) {
           </button>
         </div>
         <div className="topbar-right">
-          <span className="count-pill glass">
-            {items.length} {items.length === 1 ? 'item' : 'items'}
-          </span>
+          {channel.peers.length > 0 && (
+            <div className="peers">
+              {dedupePeers(channel.peers).map((p) => (
+                <Avatar key={p.uid} name={p.name} color={p.color} size={32} title={`${p.name} is here`} />
+              ))}
+            </div>
+          )}
+          <button className="pill glass share-btn" onClick={() => setSharing(true)} title="Invite people to this board">
+            <UserPlus size={16} strokeWidth={2.1} />
+            <span>Share</span>
+          </button>
           <button className={`icon-btn glass${showKeys ? ' active' : ''}`} onClick={() => setShowKeys((v) => !v)} title="Keyboard shortcuts">
             <Keyboard size={17} />
           </button>
         </div>
       </div>
+
+      {meta && <ShareDialog open={sharing} onClose={() => setSharing(false)} boardId={id} ownerId={meta.ownerId ?? user.id} isOwner={isOwner} />}
 
       <Presence id={showKeys ? 'keys' : null}>{showKeys && <Shortcuts onClose={() => setShowKeys(false)} />}</Presence>
 
@@ -1130,6 +1302,23 @@ function DropOverlay() {
       <div className="drop-pill glass">
         <ImagePlus size={18} /> Drop to add to board
       </div>
+    </div>
+  )
+}
+
+/** One avatar per person, even with several tabs open. */
+function dedupePeers<T extends { uid: string }>(peers: T[]) {
+  const seen = new Set<string>()
+  return peers.filter((p) => !seen.has(p.uid) && seen.add(p.uid))
+}
+
+function RemoteCursor({ name, color, x, y }: { name: string; color: string; x: number; y: number }) {
+  return (
+    <div className="remote-cursor" style={{ transform: `translate(${x}px, ${y}px)`, '--c': color } as React.CSSProperties}>
+      <svg width="18" height="20" viewBox="0 0 18 20" aria-hidden>
+        <path d="M1.5 1.5 L16 9.2 L9.2 10.8 L6.2 17.8 Z" fill="var(--c)" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+      <span className="remote-cursor-name">{name}</span>
     </div>
   )
 }

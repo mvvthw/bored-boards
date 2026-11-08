@@ -4,7 +4,7 @@ import { LogoMark } from '../components/Logo'
 import { TextField } from '../components/ui'
 import { sendMagicLink } from '../lib/auth'
 
-export default function AuthScreen() {
+export default function AuthScreen({ invited = false }: { invited?: boolean }) {
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
   const [sentTo, setSentTo] = useState<string | null>(null)
@@ -55,7 +55,7 @@ export default function AuthScreen() {
         <form className="auth-card glass" key="form" onSubmit={submit}>
           <LogoMark className="auth-mark" />
           <h1 className="auth-title">bored</h1>
-          <p className="auth-sub">Enter your email and we’ll send you a link to sign in.</p>
+          <p className="auth-sub">{invited ? 'You’ve been invited to a board. Sign in with your email to join.' : 'Enter your email and we’ll send you a link to sign in.'}</p>
           <div className="auth-fields">
             <TextField icon={<Mail size={16} />} type="email" placeholder="Email" autoComplete="email" autoFocus required value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>

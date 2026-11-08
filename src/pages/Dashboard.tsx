@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Copy, LogOut, MoreHorizontal, PenLine, Plus, Search, Trash2, UserRound } from 'lucide-react'
+import { Copy, LogOut, MoreHorizontal, PenLine, Plus, Search, Trash2, UserRound, Users } from 'lucide-react'
 import type { BoardData, BoardMeta } from '../lib/types'
-import { collectGarbage, createBoard, deleteBoard, duplicateBoard, listBoardsWithData, saveBoardMeta } from '../lib/db'
+import { collectGarbage, createBoard, deleteBoard, duplicateBoard, leaveBoard, listBoardsWithData, saveBoardMeta } from '../lib/db'
 import { signOut, useSession } from '../lib/auth'
 import { navigate, timeAgo } from '../lib/hooks'
-import { BoardThumb } from '../components/ItemViews'
+import { AssetOwnerCtx, BoardThumb } from '../components/ItemViews'
+import { Avatar } from '../components/Avatar'
+import ProfileDialog from '../components/ProfileDialog'
+import { nameOf, useProfile } from '../lib/profile'
 import { Dialog, Menu, Presence, TextField, toast, useSize, type MenuItem } from '../components/ui'
 import { Wordmark } from '../components/Logo'
 
@@ -17,7 +20,10 @@ export default function Dashboard() {
   const [confirmDelete, setConfirmDelete] = useState<Row | null>(null)
 
   const [account, setAccount] = useState<DOMRect | null>(null)
+  const [editingProfile, setEditingProfile] = useState(false)
   const session = useSession()
+  const profile = useProfile()
+  const me = session?.user.id
 
   const load = useCallback(async () => {
     try {
@@ -34,7 +40,7 @@ export default function Dashboard() {
   }, [load])
 
   const rename = async (row: Row, name: string) => {
-    const meta: BoardMeta = { id: row.id, name: name.trim() || row.name, createdAt: row.createdAt, updatedAt: row.updatedAt }
+    const meta: BoardMeta = { id: row.id, name: name.trim() || row.name, createdAt: row.createdAt, updatedAt: row.updatedAt, ownerId: row.ownerId }
     await saveBoardMeta(meta)
     load()
   }
@@ -54,15 +60,18 @@ export default function Dashboard() {
               <span>New Board</span>
             </button>
             <button className="icon-btn glass account-btn" aria-label="Account" onClick={(e) => setAccount(e.currentTarget.getBoundingClientRect())}>
-              <UserRound size={17} />
+              {profile ? <Avatar name={nameOf(profile)} color={profile.color} size={30} /> : <UserRound size={17} />}
             </button>
           </div>
           <Presence id={account ? 'account' : null}>
             {account && (
               <Menu
                 anchor={account}
-                header={session?.user.email}
-                items={[{ label: 'Sign out', icon: <LogOut size={15} />, onSelect: signOut }]}
+                header={profile ? `@${profile.username}` : session?.user.email}
+                items={[
+                  { label: profile ? 'Edit profile' : 'Set up profile', icon: <UserRound size={15} />, onSelect: () => setEditingProfile(true) },
+                  { label: 'Sign out', icon: <LogOut size={15} />, onSelect: signOut },
+                ]}
                 onClose={() => setAccount(null)}
               />
             )}
@@ -90,6 +99,11 @@ export default function Dashboard() {
           <BoardCard
             key={r.id}
             row={r}
+            shared={!!me && r.ownerId !== me}
+            onLeave={async () => {
+              await leaveBoard(r.id)
+              load()
+            }}
             onRename={(n) => rename(r, n)}
             onDuplicate={async () => {
               await duplicateBoard(r.id)
@@ -117,6 +131,8 @@ export default function Dashboard() {
         }}
       />
 
+      {session && <ProfileDialog open={editingProfile} onClose={() => setEditingProfile(false)} user={{ id: session.user.id, email: session.user.email }} />}
+
       <Dialog open={!!confirmDelete} onClose={() => setConfirmDelete(null)}>
         <h3 className="dialog-title">Delete “{confirmDelete?.name}”?</h3>
         <p className="dialog-text">This board and its images will be removed from this device. This can’t be undone.</p>
@@ -141,7 +157,21 @@ export default function Dashboard() {
   )
 }
 
-function BoardCard({ row, onRename, onDuplicate, onDelete }: { row: Row; onRename: (n: string) => void; onDuplicate: () => void; onDelete: () => void }) {
+function BoardCard({
+  row,
+  shared,
+  onRename,
+  onDuplicate,
+  onDelete,
+  onLeave,
+}: {
+  row: Row
+  shared: boolean
+  onRename: (n: string) => void
+  onDuplicate: () => void
+  onDelete: () => void
+  onLeave: () => void
+}) {
   const [thumbRef, size] = useSize<HTMLDivElement>()
   const [editing, setEditing] = useState(false)
   const [menu, setMenu] = useState<DOMRect | null>(null)
@@ -151,13 +181,22 @@ function BoardCard({ row, onRename, onDuplicate, onDelete }: { row: Row; onRenam
   const menuItems: MenuItem[] = [
     { label: 'Rename', icon: <PenLine size={15} />, onSelect: () => setEditing(true) },
     { label: 'Duplicate', icon: <Copy size={15} />, onSelect: onDuplicate },
-    { label: 'Delete', icon: <Trash2 size={15} />, danger: true, onSelect: onDelete },
+    shared
+      ? { label: 'Leave board', icon: <LogOut size={15} />, danger: true, onSelect: onLeave }
+      : { label: 'Delete', icon: <Trash2 size={15} />, danger: true, onSelect: onDelete },
   ]
 
   return (
     <div className="board-card" onClick={() => !editing && navigate(`/board/${row.id}`)}>
       <div className="thumb" ref={thumbRef}>
-        {count === 0 ? <div className="thumb-empty">Empty board</div> : size.width > 0 && <BoardThumb items={row.data.items} width={size.width} height={size.height} />}
+        <AssetOwnerCtx.Provider value={row.ownerId}>
+          {count === 0 ? <div className="thumb-empty">Empty board</div> : size.width > 0 && <BoardThumb items={row.data.items} width={size.width} height={size.height} />}
+        </AssetOwnerCtx.Provider>
+        {shared && (
+          <span className="shared-badge glass">
+            <Users size={13} strokeWidth={2.2} /> Shared
+          </span>
+        )}
         <button
           className="icon-btn glass card-more"
           aria-label="Board options"

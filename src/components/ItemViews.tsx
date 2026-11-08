@@ -1,11 +1,15 @@
-import { useState } from 'react'
+import { createContext, useContext, useState } from 'react'
 import type { Crop, ImageItem, Item, NoteItem } from '../lib/types'
 import { useAssetUrl } from '../lib/hooks'
 import { itemsBounds } from '../lib/db'
 
+/** Whose storage folder an image without `assetOwner` lives in: the board's owner. */
+export const AssetOwnerCtx = createContext<string | undefined>(undefined)
+
 /** `fade`: fade the picture in once it has loaded (canvas items; copies of an on-screen image shouldn't flash). */
 export function CroppedImage({ item, crop = item.crop, w = item.w, h = item.h, fade = false }: { item: ImageItem; crop?: Crop; w?: number; h?: number; fade?: boolean }) {
-  const url = useAssetUrl(item.assetId, item.src)
+  const boardOwner = useContext(AssetOwnerCtx)
+  const url = useAssetUrl(item.assetId, item.src, item.assetOwner ?? boardOwner)
   const [loaded, setLoaded] = useState<string | null>(null)
   const iw = w / crop.w
   const ih = h / crop.h

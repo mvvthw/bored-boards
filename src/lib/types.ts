@@ -4,7 +4,8 @@ type Base = { id: string; x: number; y: number; w: number; h: number; z: number 
 
 export type ImageItem = Base & {
   type: 'image'
-  assetId?: string // blob stored locally
+  assetId?: string // stored image
+  assetOwner?: string // uploader's user id (folder in storage); missing on older items = the board owner
   src?: string // remote URL fallback when the image couldn't be copied
   natW: number
   natH: number
@@ -34,6 +35,14 @@ export type BoardMeta = {
   name: string
   createdAt: number
   updatedAt: number
+  ownerId?: string
+}
+
+export type Profile = {
+  id: string
+  username: string
+  display_name: string | null
+  color: string
 }
 
 export type BoardData = {

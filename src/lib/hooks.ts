@@ -8,10 +8,15 @@ const subscribe = (cb: () => void) => {
   return () => window.removeEventListener('hashchange', cb)
 }
 
-export function useRoute(): { name: 'home' } | { name: 'board'; id: string } {
+export type Route = { name: 'home' } | { name: 'board'; id: string } | { name: 'join'; token: string }
+
+export function useRoute(): Route {
   const hash = useSyncExternalStore(subscribe, () => window.location.hash)
-  const m = hash.match(/^#\/board\/([\w-]+)/)
-  return m ? { name: 'board', id: m[1] } : { name: 'home' }
+  const b = hash.match(/^#\/board\/([\w-]+)/)
+  if (b) return { name: 'board', id: b[1] }
+  const j = hash.match(/^#\/join\/([\w-]+)/)
+  if (j) return { name: 'join', token: j[1] }
+  return { name: 'home' }
 }
 
 export const navigate = (path: string) => {
@@ -20,16 +25,16 @@ export const navigate = (path: string) => {
 
 /* ---------- assets ---------- */
 
-export function useAssetUrl(assetId?: string, src?: string) {
+export function useAssetUrl(assetId?: string, src?: string, owner?: string) {
   const [url, setUrl] = useState<string | undefined>(() => (assetId ? cachedAssetUrl(assetId) : src))
   useEffect(() => {
     if (!assetId) return setUrl(src)
     let live = true
-    getAssetUrl(assetId).then((u) => live && setUrl(u ?? src))
+    getAssetUrl(assetId, owner).then((u) => live && setUrl(u ?? src))
     return () => {
       live = false
     }
-  }, [assetId, src])
+  }, [assetId, src, owner])
   return url
 }
 
