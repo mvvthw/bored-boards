@@ -49,6 +49,7 @@ function CanvasItem(p: Props) {
   return (
     <div
       ref={ref}
+      data-id={item.id}
       className={`item item-${item.type}${p.selected ? ' selected' : ''}${p.editing ? ' editing' : ''}${p.magnet ? ' magnet' : ''}${p.dimmed ? ' dimmed' : ''}${p.pulse ? ' pulse' : ''}`}
       style={{
         left: item.x,

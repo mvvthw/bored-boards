@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronLeft, Hand, ImagePlus, Keyboard, Maximize, Minus, Pencil, Plus, Tags, Type, UploadCloud, UserPlus, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpToLine, Check, ChevronLeft, ClipboardPaste, Copy, CopyPlus, Crop as CropIcon, Download, ExternalLink, Hand, LayoutGrid, Link, MousePointerSquareDashed, StickyNote, Trash2, ZoomIn, ImagePlus, Keyboard, Maximize, Minus, Pencil, Plus, Tags, Type, UploadCloud, UserPlus, X } from 'lucide-react'
 import type { BoardMeta, Crop, ImageItem, Item, NoteItem, Viewport } from '../lib/types'
 import { FULL_CROP } from '../lib/types'
 import { getBoardData, getBoardMeta, itemsBounds, saveBoardData, saveBoardMeta, uid } from '../lib/db'
@@ -13,6 +13,8 @@ import { CropBar, SelectionBar } from '../components/ContextBar'
 import { InlineName } from './Dashboard'
 import { AssetOwnerCtx, CroppedImage, NoteBody } from '../components/ItemViews'
 import ShareDialog from '../components/ShareDialog'
+import { ContextMenu, type CtxItem } from '../components/ContextMenu'
+import { copyImage, copyText, downloadImage } from '../lib/clipboard'
 import { Avatar } from '../components/Avatar'
 import { useBoardChannel, type Ops } from '../lib/realtime'
 import { colorFor, nameOf, useProfile } from '../lib/profile'
@@ -92,6 +94,9 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
   // Tags to spotlight; everything else fades back. Local to you, not synced.
   const [tagFilter, setTagFilter] = useState<string[]>([])
   const [filterOpen, setFilterOpen] = useState(false)
+  // Right-click menu: where it opened, what it's for (empty = the canvas), and the world point.
+  const [ctx, setCtx] = useState<{ x: number; y: number; ids: string[]; at: { x: number; y: number } } | null>(null)
+  const closeCtx = useCallback(() => setCtx(null), [])
   // 'hand': a plain left-drag pans, anywhere. Middle-drag and Space-drag pan in either tool.
   const [tool, setTool] = useState<'select' | 'hand'>('select')
   const toolRef = useRef(tool)
@@ -872,6 +877,11 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
       } else if (mod && k === 'a') {
         e.preventDefault()
         setSelected(itemsRef.current.map((i) => i.id))
+      } else if (mod && k === 'c' && selRef.current.length === 1 && !window.getSelection()?.toString()) {
+        const it = itemsRef.current.find((i) => i.id === selRef.current[0])
+        e.preventDefault()
+        if (it?.type === 'image') copyImage(it, metaRef.current?.ownerId)
+        else if (it?.type === 'note') copyText(it.text, 'Note copied')
       } else if (mod && k === 'd') {
         e.preventDefault()
         duplicate()
@@ -1037,9 +1047,103 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
   })()
 
   const empty = ready && items.length === 0
+
+  /* ---------- right-click menu ---------- */
+
+  const onContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault()
+    if (cropping || (e.target as Element).closest('.context-bar, .board-empty-card, .tag-picker')) return
+    if (editingId) (document.activeElement as HTMLElement)?.blur()
+    const hit = (e.target as Element).closest('.item[data-id]')?.getAttribute('data-id')
+    let ids: string[] = []
+    if (hit) ids = selRef.current.includes(hit) ? selRef.current : [hit]
+    setSelected(ids)
+    setCtx({ x: e.clientX, y: e.clientY, ids, at: toWorld(e.clientX, e.clientY) })
+  }
+
+  const pasteAt = async (at: { x: number; y: number }) => {
+    try {
+      const clip = await navigator.clipboard.read()
+      const files: Blob[] = []
+      let text = ''
+      for (const ci of clip) {
+        const t = ci.types.find((x) => x.startsWith('image/'))
+        if (t) files.push(await ci.getType(t))
+        else if (ci.types.includes('text/plain')) text = (await (await ci.getType('text/plain')).text()).trim()
+      }
+      if (files.length) importAll(files, [], at, true)
+      else if (text) addNote({ x: at.x, y: at.y - 20 }, text)
+      else toast('Nothing to paste')
+    } catch {
+      toast('Press ⌘V to paste')
+    }
+  }
+
+  const arrangeItems: CtxItem[] = [
+    { label: 'Bring to front', icon: <ArrowUpToLine size={15} />, shortcut: ']', onSelect: () => reorder(true) },
+    { label: 'Send to back', icon: <ArrowDownToLine size={15} />, shortcut: '[', onSelect: () => reorder(false) },
+  ]
+  const removeItems: CtxItem[] = [
+    { label: 'Duplicate', icon: <CopyPlus size={15} />, shortcut: '⌘D', onSelect: duplicate },
+    { label: 'Delete', icon: <Trash2 size={15} />, shortcut: '⌫', danger: true, onSelect: del },
+  ]
+  const ctxItems = (): CtxItem[] => {
+    if (!ctx) return []
+    const sel = items.filter((i) => ctx.ids.includes(i.id))
+    if (!sel.length) {
+      return [
+        { label: 'Paste here', icon: <ClipboardPaste size={15} />, shortcut: '⌘V', onSelect: () => pasteAt(ctx.at) },
+        { label: 'New note here', icon: <StickyNote size={15} />, shortcut: 'N', onSelect: () => addNote({ x: ctx.at.x, y: ctx.at.y - 20 }) },
+        { label: 'Add images…', icon: <ImagePlus size={15} />, onSelect: () => fileInput.current?.click() },
+        'sep',
+        { label: 'Select all', icon: <MousePointerSquareDashed size={15} />, shortcut: '⌘A', disabled: !items.length, onSelect: () => setSelected(itemsRef.current.map((i) => i.id)) },
+        { label: 'Fit board', icon: <Maximize size={15} />, shortcut: '⇧1', disabled: !items.length, onSelect: () => fitTo(itemsRef.current) },
+      ]
+    }
+    if (sel.length > 1) {
+      return [
+        { label: 'Tidy into rows', icon: <LayoutGrid size={15} />, shortcut: 'T', disabled: sel.filter((i) => i.type === 'image').length < 2, onSelect: tidy },
+        'sep',
+        ...arrangeItems,
+        'sep',
+        ...removeItems,
+      ]
+    }
+    const it = sel[0]
+    if (it.type === 'note') {
+      return [
+        { label: 'Edit text', icon: <Pencil size={15} />, shortcut: '↵', onSelect: () => startEdit(it.id) },
+        { label: 'Copy text', icon: <Copy size={15} />, shortcut: '⌘C', disabled: !it.text.trim(), onSelect: () => copyText(it.text, 'Note copied') },
+        'sep',
+        ...arrangeItems,
+        'sep',
+        ...removeItems,
+      ]
+    }
+    const link = it.source
+    return [
+      { label: 'Copy image', icon: <Copy size={15} />, shortcut: '⌘C', onSelect: () => copyImage(it, meta?.ownerId) },
+      { label: 'Download', icon: <Download size={15} />, onSelect: () => downloadImage(it, meta?.ownerId) },
+      ...(link
+        ? ([
+            { label: 'Copy source link', icon: <Link size={15} />, onSelect: () => copyText(link, 'Link copied') },
+            { label: 'Open source', icon: <ExternalLink size={15} />, onSelect: () => window.open(link, '_blank', 'noopener') },
+          ] as CtxItem[])
+        : []),
+      'sep',
+      { label: 'Crop', icon: <CropIcon size={15} />, shortcut: 'C', onSelect: () => startCrop(it) },
+      { label: 'Add detail close-up', icon: <ZoomIn size={15} />, shortcut: 'D', onSelect: () => startDetail(it) },
+      { label: 'Add note', icon: <StickyNote size={15} />, onSelect: addNoteBeside },
+      'sep',
+      ...arrangeItems,
+      'sep',
+      ...removeItems,
+    ]
+  }
+
   // Keyed by what it's for, so switching selection cross-fades the bar instead of jumping it.
   const barId =
-    !barPos || gesturing || editingId || panning || marquee ? null : cropping ? `crop:${cropping.id}` : selItems.length ? `sel:${selected.join(',')}` : null
+    !barPos || gesturing || editingId || panning || marquee || ctx ? null : cropping ? `crop:${cropping.id}` : selItems.length ? `sel:${selected.join(',')}` : null
 
   return (
     <div className="board-page">
@@ -1047,6 +1151,7 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
         ref={canvasRef}
         className={`canvas${tool === 'hand' ? ' hand' : ''}${panning ? ' panning' : ''}${dropping ? ' dropping' : ''}${tidying ? ' tidying' : ''}`}
         onPointerDown={onCanvasPointerDown}
+        onContextMenu={onContextMenu}
         onPointerMove={onCanvasPointerMove}
         onPointerLeave={() => channel.peers.length && channel.sendCursor(null, null)}
         // Middle-click would otherwise start the browser's autoscroll.
@@ -1212,6 +1317,10 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
 
       {meta && <ShareDialog open={sharing} onClose={() => setSharing(false)} boardId={id} ownerId={meta.ownerId ?? user.id} isOwner={isOwner} />}
 
+      <Presence id={ctx ? `ctx:${ctx.x},${ctx.y}` : null} ms={150}>
+        {ctx && <ContextMenu x={ctx.x} y={ctx.y} items={ctxItems()} title={ctx.ids.length > 1 ? `${ctx.ids.length} selected` : undefined} onClose={closeCtx} />}
+      </Presence>
+
       <Presence id={showKeys ? 'keys' : null}>{showKeys && <Shortcuts onClose={() => setShowKeys(false)} />}</Presence>
 
       <div className="dock glass">
@@ -1285,6 +1394,7 @@ const KEYS: [string, string][] = [
   ['Pan', 'Middle-drag · Space-drag · Scroll'],
   ['Pan tool', 'H (V to go back)'],
   ['Zoom', 'Pinch · ⌘ Scroll'],
+  ['Copy image / note', '⌘C · Right-click'],
   ['Crop image', 'Double-click · C'],
   ['Add detail close-up', 'D'],
   ['Tidy selection', 'T'],
