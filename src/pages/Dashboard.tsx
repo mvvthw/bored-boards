@@ -106,7 +106,12 @@ export default function Dashboard() {
             }}
             onRename={(n) => rename(r, n)}
             onDuplicate={async () => {
-              await duplicateBoard(r.id)
+              try {
+                await duplicateBoard(r.id)
+              } catch (e) {
+                console.error(e)
+                toast('Couldn’t duplicate the board — try again')
+              }
               load()
             }}
             onDelete={() => setConfirmDelete(r)}
@@ -126,8 +131,13 @@ export default function Dashboard() {
         open={creating}
         onClose={() => setCreating(false)}
         onCreate={async (name) => {
-          const m = await createBoard(name)
-          navigate(`/board/${m.id}`)
+          try {
+            const m = await createBoard(name)
+            navigate(`/board/${m.id}`)
+          } catch (e) {
+            console.error(e)
+            toast('Couldn’t create the board — try again')
+          }
         }}
       />
 

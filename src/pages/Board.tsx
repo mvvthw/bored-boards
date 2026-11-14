@@ -336,10 +336,6 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
     const wy = (sy - v.y) / v.zoom
     return { zoom: nz, x: sx - wx * nz, y: sy - wy * nz }
   }
-  const zoomAt = (cx: number, cy: number, z: number) => {
-    const r = rect()
-    setVp(zoomedVp(vpRef.current, cx - r.left, cy - r.top, z))
-  }
   // Buttons & shortcuts glide around the view center. Repeated presses stack onto the running animation's target.
   const zoomCenterTo = (z: (from: number) => number) => {
     const r = rect()
@@ -362,29 +358,61 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
     if (animate) animateVp(next)
     else setVp(next)
   }
+  /* While the zoom is moving, --inv (hairline borders, shadows) is held at its starting value so the
+     browser only rescales the already-painted world layer instead of repainting every image each frame.
+     It catches up (with a short CSS transition) once the view comes to rest. */
+  const heldInv = useRef<number | null>(null)
+  const holdInv = () => {
+    if (heldInv.current == null) heldInv.current = vpRef.current.zoom
+  }
+  const settle = () => {
+    if (glide.current.raf || animRef.current || wheelTimer.current || heldInv.current == null) return
+    heldInv.current = null
+    setVp({ ...vpRef.current })
+  }
+
+  // Tweened moves (zoom buttons, shortcuts, fit).
   const animRef = useRef(0)
   const animTo = useRef<Viewport | null>(null)
-  const stopAnim = () => {
+  const stopTween = () => {
     if (!animRef.current) return
     cancelAnimationFrame(animRef.current)
     animRef.current = 0
     animTo.current = null
     if (!wheelTimer.current) lockCursor(undefined)
   }
+  const stopAnim = () => {
+    stopTween()
+    stopGlide()
+    settle()
+  }
   const animateVp = (to: Viewport) => {
-    stopAnim()
+    stopTween()
+    stopGlide()
     const from = vpRef.current
     animTo.current = to
+    if (to.zoom !== from.zoom) holdInv()
+    // Scale geometrically around the one world point both views share on screen, so the zoom feels
+    // even (no rush at the start of a zoom-out) and nothing drifts sideways on the way.
+    const dz = to.zoom - from.zoom
+    const fx = Math.abs(dz) > 1e-6 ? (from.x - to.x) / dz : 0
+    const fy = Math.abs(dz) > 1e-6 ? (from.y - to.y) / dz : 0
     const t0 = performance.now()
     const step = (t: number) => {
-      const k = Math.min(1, (t - t0) / 320)
-      const e = 1 - Math.pow(1 - k, 3)
-      setVp({ x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e, zoom: from.zoom + (to.zoom - from.zoom) * e })
+      const k = Math.min(1, (t - t0) / 360)
+      const e = 1 - Math.pow(1 - k, 4)
+      if (Math.abs(dz) > 1e-6) {
+        const zoom = k === 1 ? to.zoom : from.zoom * Math.pow(to.zoom / from.zoom, e)
+        setVp({ zoom, x: from.x + fx * (from.zoom - zoom), y: from.y + fy * (from.zoom - zoom) })
+      } else {
+        setVp({ zoom: to.zoom, x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e })
+      }
       if (k < 1) animRef.current = requestAnimationFrame(step)
       else {
         animRef.current = 0
         animTo.current = null
         if (!wheelTimer.current) lockCursor(undefined)
+        settle()
       }
     }
     // Same as scrolling: the view moves under the pointer, so hold the cursor still.
@@ -393,6 +421,56 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
       lockCursor(under ? getComputedStyle(under).cursor : undefined)
     }
     animRef.current = requestAnimationFrame(step)
+  }
+
+  /* Wheel glide. Mouse wheels move in coarse notches (Windows sends ~100–150 px per click), so each
+     notch sets a target that the view eases toward every frame instead of jumping there. Zoom eases
+     in log space around the pointer; trackpad pinches get a much shorter ease so they still feel 1:1. */
+  const glide = useRef({ raf: 0, t: 0, zoom: 0, ax: 0, ay: 0, tau: 80, px: 0, py: 0 })
+  const stopGlide = () => {
+    const g = glide.current
+    if (g.raf) cancelAnimationFrame(g.raf)
+    g.raf = 0
+    g.zoom = 0
+    g.px = g.py = 0
+  }
+  const glideStep = (t: number) => {
+    const g = glide.current
+    const dt = clamp(t - g.t, 1, 50)
+    g.t = t
+    let v = vpRef.current
+    if (g.zoom) {
+      const lz = Math.log(v.zoom)
+      const lt = Math.log(g.zoom)
+      const near = Math.abs(lt - lz) < 0.0008
+      const nz = near ? g.zoom : Math.exp(lz + (lt - lz) * (1 - Math.exp(-dt / g.tau)))
+      v = zoomedVp(v, g.ax, g.ay, nz)
+      if (near) g.zoom = 0
+    }
+    if (g.px || g.py) {
+      const k = 1 - Math.exp(-dt / 70)
+      let sx = g.px * k
+      let sy = g.py * k
+      if (Math.abs(g.px - sx) < 0.3 && Math.abs(g.py - sy) < 0.3) {
+        sx = g.px
+        sy = g.py
+      }
+      g.px -= sx
+      g.py -= sy
+      v = { ...v, x: v.x - sx, y: v.y - sy }
+    }
+    setVp(v)
+    if (g.zoom || g.px || g.py) g.raf = requestAnimationFrame(glideStep)
+    else {
+      g.raf = 0
+      settle()
+    }
+  }
+  const startGlide = () => {
+    const g = glide.current
+    if (g.raf) return
+    g.t = performance.now()
+    g.raf = requestAnimationFrame(glideStep)
   }
 
   const wheelTimer = useRef(0)
@@ -416,14 +494,32 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
       wheelTimer.current = window.setTimeout(() => {
         wheelTimer.current = 0
         lockCursor(undefined)
+        settle()
       }, 160)
-      stopAnim()
-      const mult = e.deltaMode === 1 ? 16 : 1
+      stopTween()
+      const r = rect()
+      const mult = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1
+      const dx = e.deltaX * mult
+      const dy = e.deltaY * mult
+      // A mouse wheel click: line/page units, or one big purely vertical step. Trackpads stream small deltas.
+      const notch = e.deltaMode !== 0 || (Math.abs(dy) >= 50 && dx === 0)
+      const g = glide.current
       if (e.ctrlKey || e.metaKey) {
-        zoomAt(e.clientX, e.clientY, vpRef.current.zoom * Math.exp(-e.deltaY * mult * 0.0075))
+        holdInv()
+        // ~1.2× per click (a little more when the wheel is spun fast); pinches scale with the gesture.
+        const step = notch ? Math.sign(dy) * 0.18 * clamp(Math.abs(dy) / 100, 1, 2) : clamp(dy * 0.0085, -0.25, 0.25)
+        g.zoom = clamp((g.zoom || vpRef.current.zoom) * Math.exp(-step), MIN_ZOOM, MAX_ZOOM)
+        g.ax = e.clientX - r.left
+        g.ay = e.clientY - r.top
+        g.tau = notch ? 85 : 30
+        startGlide()
+      } else if (notch) {
+        g.px += dx
+        g.py += dy
+        startGlide()
       } else {
         const v = vpRef.current
-        setVp({ ...v, x: v.x - e.deltaX * mult, y: v.y - e.deltaY * mult })
+        setVp({ ...v, x: v.x - dx, y: v.y - dy })
       }
     }
     el.addEventListener('wheel', onWheel, { passive: false })
@@ -598,8 +694,8 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
     const pan = e.button === 1 || spaceHeld.current || toolRef.current === 'hand'
     if (pan) {
       if (e.button === 1) e.preventDefault()
-      const v0 = vpRef.current
       stopAnim()
+      const v0 = vpRef.current
       drag(
         e,
         (dx, dy) => {
@@ -1180,7 +1276,7 @@ export default function Board({ id, user }: { id: string; user: { id: string; em
         }
       >
         <AssetOwnerCtx.Provider value={meta?.ownerId}>
-        <div className="world" style={{ transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})`, '--inv': 1 / vp.zoom } as React.CSSProperties}>
+        <div className="world" style={{ transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})`, '--inv': 1 / (heldInv.current ?? vp.zoom) } as React.CSSProperties}>
           {sorted.map((it) => (
             <CanvasItem
               key={it.id}

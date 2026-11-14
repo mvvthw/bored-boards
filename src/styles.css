@@ -619,12 +619,20 @@ html.cursor-locked * {
   background: radial-gradient(130% 100% at 50% 50%, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
 }
 
+/* Registered so it can ease: during a zoom it's held still (pure GPU scaling), then glides to the
+   new value once the view settles instead of popping. */
+@property --inv {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 1;
+}
 .world {
   position: absolute;
   left: 0;
   top: 0;
   transform-origin: 0 0;
   will-change: transform;
+  transition: --inv 220ms var(--ease-ui);
 }
 
 .cropped {
